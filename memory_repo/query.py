@@ -1,11 +1,9 @@
-try:
-    from itertools import ifilter as filter
-    from itertools import ifilterfalse as filterfalse
-except ImportError:
-    from itertools import filterfalse
-    from functools import reduce
+from __future__ import annotations
 
-from operator import attrgetter, itemgetter
+from functools import reduce
+from itertools import filterfalse
+from operator import attrgetter
+from typing import TypeVar
 
 
 class ObjectDoesNotExist(Exception):
@@ -33,79 +31,52 @@ def lookups(filter):
         "in": lambda obj_value, value: obj_value in value,
         "not_in": lambda obj_value, value: obj_value not in value,
         "range": lambda obj_value, range_values: range_values[0]
-        <= obj_value
-        <= range_values[1],
+                                                 <= obj_value
+                                                 <= range_values[1],
         "date_range": lambda obj_value, range_values: range_values[0].isoformat()
-        <= obj_value.isoformat()
-        <= range_values[1].isoformat(),
+                                                      <= obj_value.isoformat()
+                                                      <= range_values[1].isoformat(),
     }.get(filter, None)
 
 
-class QuerySet(object):
-    def __init__(self, queryset):
-        self._data = queryset
+RepoItem = TypeVar("RepoItem")
+
+
+class MemoryRepo:
+    def __init__(self, queryset: list[RepoItem]):
+        # TODO: no support for lazy
+        self._data = list(queryset)
 
     @property
     def _queryset(self):
-        # In order to keep queryset lazy we don't convert _data which is geneartor object to list yet only when queryset
-        # is evaluated.
-        self._data = list(self._data)
         return self._data
 
     def __iter__(self):
         return iter(self._queryset)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index) -> RepoItem:
         return self._queryset[index]
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._queryset)
 
-    def _copy(self, queryset):
+    def _copy(self, queryset) -> MemoryRepo:
         return self.__class__(queryset)
 
-    def first(self):
-        if self._queryset:
-            return self._queryset[0]
-        return None
-
-    def last(self):
-        if self._queryset:
-            return self._queryset[-1]
-        return None
-
-    def exists(self):
-        return bool(self)
-
-    def count(self):
-        return len(self)
-
-    def all(self):
-        return self._copy(self._queryset)
-
-    def order_by(self, key):
+    def order_by(self, key) -> MemoryRepo:
         reverse = False
         if "-" in key:
             reverse = True
             key = key.replace("-", "")
-        try:
-            return self._copy(
-                sorted(
-                    self._queryset,
-                    key=attrgetter(key.replace("__", ".")),
-                    reverse=reverse,
-                )
+        return self._copy(
+            sorted(
+                self._queryset,
+                key=attrgetter(key.replace("__", ".")),
+                reverse=reverse,
             )
-        except AttributeError:
-            return self._copy(
-                sorted(
-                    self._queryset,
-                    key=itemgetter(key.replace("__", ".")),
-                    reverse=reverse,
-                )
-            )
+        )
 
-    def _filter_or_exclude(self, **kwargs):
+    def _filter_or_exclude(self, **kwargs) -> MemoryRepo:
         """Used for filter and exclude returns a function to be used by itertool."""
 
         def _filter(obj):
@@ -123,56 +94,52 @@ class QuerySet(object):
                     # Since there's field_lookup, remove the last element which is a look up value such as gt,
                     # startswith etc.
                     lookup_key.pop()
-                    try:
-                        lookup_match = field_lookup(
-                            reduce(getattr, lookup_key, obj), value
-                        )
-                    except AttributeError:
-
-                        try:
-                            lookup_match = field_lookup(
-                                reduce(lambda d, k: d[k], lookup_key, obj), value
-                            )
-                        except (KeyError, TypeError):
-                            raise ValueError(
-                                "Object {obj} does not have attribute or key: {lookup_key}".format(
-                                    obj=obj, lookup_key=lookup_key[0]
-                                )
-                            )
-
+                    lookup_match = field_lookup(reduce(getattr, lookup_key, obj), value)
                     if not lookup_match:
                         return False
                     continue
 
-                try:
-                    field_match = reduce(getattr, lookup_key, obj) == value
-                except AttributeError:
-                    try:
-                        field_match = (
-                            reduce(lambda d, k: d[k], lookup_key, obj) == value
-                        )
-                    except (KeyError, TypeError):
-                        raise ValueError(
-                            "Object {obj} does not have attribute or key :{lookup_key}".format(
-                                obj=obj, lookup_key=key
-                            )
-                        )
-
+                field_match = reduce(getattr, lookup_key, obj) == value
                 if not field_match:
                     return False
             return True
 
         return _filter
 
-    def filter(self, **kwargs):
+    def filter(self, **kwargs) -> MemoryRepo:
         return self._copy(filter(self._filter_or_exclude(**kwargs), self._queryset))
 
-    def exclude(self, **kwargs):
+    def exclude(self, **kwargs) -> MemoryRepo:
         return self._copy(
             filterfalse(self._filter_or_exclude(**kwargs), self._queryset)
         )
 
-    def get(self, **kwargs):
+    def exists(self) -> bool:
+        return bool(self)
+
+    def count(self) -> bool:
+        return len(self)
+
+    def all(self) -> list[RepoItem]:
+        return self._copy(self._queryset)
+
+    def first(self) -> RepoItem:
+        if self._queryset:
+            return self._queryset[0]
+        return None
+
+    def last(self) -> RepoItem:
+        if self._queryset:
+            return self._queryset[-1]
+        return None
+
+    def find_first(self, **kwargs):
+        clone = self.filter(**kwargs)
+        if clone:
+            return clone[0]
+        return None
+
+    def get(self, **kwargs) -> RepoItem:
         clone = self.filter(**kwargs)
         num = len(clone)
         if num == 1:
